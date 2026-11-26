@@ -112,7 +112,7 @@ class App(tk.Tk):
         self.stat = tk.Label(main, text="Type a name, press Enter, type the registration number, then press Enter for the next student.", bg="#101e30", fg="#9ec0e6", font=("Segoe UI", 10), anchor="w", padx=12, pady=8, relief="solid", bd=1)
         self.stat.pack(fill="x")
         def _s_in(self, _):
-        if self.s_ph: self.s_ph = False; self.svar.set(""); self.sent.config(fg="#dfebff")
+                if self.s_ph: self.s_ph = False; self.svar.set(""); self.sent.config(fg="#dfebff")
 
     def _s_out(self, _):
         if not self.svar.get().strip(): self.s_ph = True; self.sent.config(fg="#6c8bb0"); self.svar.set("Search name or registration number...")
