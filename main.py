@@ -1,298 +1,311 @@
-import os
-import re
-import sqlite3
-import sys
+import os, re, sqlite3, sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
-
-def get_app_data_dir() -> Path:
-    """Return a guaranteed writable local directory for data and exports."""
+def get_data_dir():
     if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        test_file = exe_dir / ".write_test"
+        d = Path(sys.executable).resolve().parent
         try:
-            test_file.touch()
-            test_file.unlink()
-            return exe_dir
+            t = d / ".test"; t.touch(); t.unlink()
+            return d
         except OSError:
-            local_app = os.environ.get("LOCALAPPDATA") or str(Path.home())
-            fallback = Path(local_app) / "BAF_Simple_Student_Register"
-            fallback.mkdir(parents=True, exist_ok=True)
-            return fallback
+            f = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BAF_Register"
+            f.mkdir(parents=True, exist_ok=True)
+            return f
     return Path(__file__).resolve().parent
 
+def reg_key(v):
+    return "".join((v or "").split()).upper()
 
-def reg_key(value: str | None) -> str:
-    """Normalize registration numbers for duplicate checking."""
-    return "".join((value or "").split()).upper()
+def safe_name(s):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", s.strip()).rstrip(". ") or "Class_Export"
 
-
-def sanitize_filename(name: str) -> str:
-    """Replace invalid Windows filename characters with underscores."""
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name.strip())
-    cleaned = cleaned.rstrip(". ")
-    return cleaned or "Class_Export"
-
-
-class DatabaseManager:
-    """Offline SQLite manager with foreign keys and integrity handling."""
-
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(str(self.db_path))
+class DB:
+    def __init__(self, path):
+        self.conn = sqlite3.connect(str(path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON;")
-        self._init_schema()
-
-    def _init_schema(self) -> None:
         with self.conn:
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS classes (
-                  id INTEGER PRIMARY KEY,
-                  name TEXT NOT NULL UNIQUE COLLATE NOCASE
-                );
-                """
-            )
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS students (
-                  id INTEGER PRIMARY KEY,
-                  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-                  name TEXT,
-                  reg TEXT,
-                  reg_key TEXT,
-                  UNIQUE(class_id, reg_key)
-                );
-                """
-            )
+            self.conn.execute("CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE, name TEXT, reg TEXT, reg_key TEXT, UNIQUE(class_id, reg_key));")
 
-    def get_classes(self) -> list[sqlite3.Row]:
-        cur = self.conn.execute("SELECT id, name FROM classes ORDER BY name COLLATE NOCASE ASC;")
-        return cur.fetchall()
+    def classes(self): return self.conn.execute("SELECT id, name FROM classes ORDER BY name COLLATE NOCASE;").fetchall()
+    def add_class(self, name):
+        with self.conn: return self.conn.execute("INSERT INTO classes (name) VALUES (?);", (name,)).lastrowid
+    def rename_class(self, cid, name):
+        with self.conn: self.conn.execute("UPDATE classes SET name=? WHERE id=?;", (name, cid))
+    def del_class(self, cid):
+        with self.conn: self.conn.execute("DELETE FROM classes WHERE id=?;", (cid,))
+    def students(self, cid): return self.conn.execute("SELECT id, name, reg FROM students WHERE class_id=? ORDER BY id;", (cid,)).fetchall()
+    def dup_reg(self, cid, rk, excl=None):
+        if not rk: return False
+        sql = "SELECT 1 FROM students WHERE class_id=? AND reg_key=?" + (" AND id!=?" if excl else "")
+        return self.conn.execute(sql, (cid, rk, excl) if excl else (cid, rk)).fetchone() is not None
+    def add_student(self, cid, name, reg):
+        with self.conn: return self.conn.execute("INSERT INTO students (class_id, name, reg, reg_key) VALUES (?,?,?,?);", (cid, name, reg, reg_key(reg) or None)).lastrowid
+    def upd_student(self, sid, name, reg):
+        with self.conn: self.conn.execute("UPDATE students SET name=?, reg=?, reg_key=? WHERE id=?;", (name, reg, reg_key(reg) or None, sid))
+    def del_student(self, sid):
+        with self.conn: self.conn.execute("DELETE FROM students WHERE id=?;", (sid,))
 
-    def create_class(self, name: str) -> int:
-        with self.conn:
-            cur = self.conn.execute("INSERT INTO classes (name) VALUES (?);", (name.strip(),))
-            return int(cur.lastrowid)
-
-    def rename_class(self, class_id: int, new_name: str) -> None:
-        with self.conn:
-            self.conn.execute(
-                "UPDATE classes SET name = ? WHERE id = ?;",
-                (new_name.strip(), class_id),
-            )
-
-    def delete_class(self, class_id: int) -> None:
-        with self.conn:
-            self.conn.execute("DELETE FROM classes WHERE id = ?;", (class_id,))
-
-    def get_students(self, class_id: int) -> list[sqlite3.Row]:
-        cur = self.conn.execute(
-            "SELECT id, name, reg, reg_key FROM students WHERE class_id = ? ORDER BY id ASC;",
-            (class_id,),
-        )
-        return cur.fetchall()
-
-    def reg_exists(
-        self, class_id: int, normalized_key: str, exclude_student_id: int | None = None
-    ) -> bool:
-        if not normalized_key:
-            return False
-        if exclude_student_id is not None:
-            cur = self.conn.execute(
-                "SELECT 1 FROM students WHERE class_id = ? AND reg_key = ? AND id != ? LIMIT 1;",
-                (class_id, normalized_key, exclude_student_id),
-            )
-        else:
-            cur = self.conn.execute(
-                "SELECT 1 FROM students WHERE class_id = ? AND reg_key = ? LIMIT 1;",
-                (class_id, normalized_key),
-            )
-        return cur.fetchone() is not None
-
-    def insert_student(self, class_id: int, name: str, reg: str) -> int:
-        norm = reg_key(reg) or None
-        with self.conn:
-            cur = self.conn.execute(
-                "INSERT INTO students (class_id, name, reg, reg_key) VALUES (?, ?, ?, ?);",
-                (class_id, name, reg, norm),
-            )
-            return int(cur.lastrowid)
-
-    def update_student(self, student_id: int, name: str, reg: str) -> None:
-        norm = reg_key(reg) or None
-        with self.conn:
-            self.conn.execute(
-                "UPDATE students SET name = ?, reg = ?, reg_key = ? WHERE id = ?;",
-                (name, reg, norm, student_id),
-            )
-
-    def delete_student(self, student_id: int) -> None:
-        with self.conn:
-            self.conn.execute("DELETE FROM students WHERE id = ?;", (student_id,))
-
-    def close(self) -> None:
-        if self.conn:
-            self.conn.close()
-
-
-class StudentRegisterApp(tk.Tk):
-    INITIAL_MIN_ROWS = 20
-    DEFAULT_STATUS = (
-        "Type a name, press Enter, type the registration number, "
-        "then press Enter for the next student."
-    )
-
-    BG_MAIN = "#0b1220"
-    BG_PANEL = "#101e30"
-    BG_BTN = "#163449"
-    BG_BTN_HOVER = "#20516a"
-    BG_HEADER = "#193449"
-    BORDER = "#28415b"
-    BORDER_BTN = "#247b91"
-    TEXT_MAIN = "#dfebff"
-    TEXT_MUTED = "#9ec0e6"
-    ACCENT = "#63e6df"
-
-    def __init__(self, db: DatabaseManager, base_dir: Path):
+class App(tk.Tk):
+    def __init__(self, db, base_dir):
         super().__init__()
-        self.db = db
-        self.base_dir = base_dir
-
-        self.classes_data: list[tuple[int, str]] = []
-        self.current_class_id: int | None = None
-        self.current_class_name: str = ""
-
-        self.rows_data: list[dict] = []
-        self.iid_to_row_idx: dict[str, int] = {}
-
-        self.active_editor: tk.Entry | None = None
-        self.editing_row_idx: int | None = None
-        self.editing_col_idx: int | None = None
-
+        self.db, self.base_dir = db, base_dir
+        self.cid, self.cname = None, ""
+        self.cls_list, self.rows, self.iid_map = [], [], {}
+        self.editor, self.ed_rc = None, None
         self.title("BAF | Simple Student Register")
-        self.configure(bg=self.BG_MAIN)
-        self._center_window(900, 700)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        self._configure_ttk_styles()
-        self._build_ui()
+        self.configure(bg="#0b1220")
+        self.geometry("900x700")
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self._setup_ui()
         self._load_classes()
 
-    def _center_window(self, width: int, height: int) -> None:
-        self.update_idletasks()
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        x = max(0, (screen_w - width) // 2)
-        y = max(0, (screen_h - height) // 2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
-        self.minsize(760, 540)
+    def _setup_ui(self):
+        st = ttk.Style(self)
+        st.theme_use("clam")
+        st.configure("T.Treeview", background="#101e30", foreground="#dfebff", fieldbackground="#101e30", bordercolor="#28415b", rowheight=30, font=("Segoe UI", 11))
+        st.map("T.Treeview", background=[("selected", "#20516a")], foreground=[("selected", "#ffffff")])
+        st.configure("T.Treeview.Heading", background="#193449", foreground="#63e6df", relief="flat", font=("Segoe UI", 11, "bold"), padding=8)
+        root = tk.Frame(self, bg="#0b1220")
+        root.pack(fill="both", expand=True, padx=16, pady=16)
+        side = tk.Frame(root, bg="#0b1220", width=220)
+        side.pack(side="left", fill="y", padx=(0, 16))
+        side.pack_propagate(False)
+        tk.Label(side, text="BAF\nREGISTER", bg="#0b1220", fg="#63e6df", font=("Segoe UI", 22, "bold"), justify="left", anchor="w").pack(fill="x", pady=(0, 12))
+        self.lb = tk.Listbox(side, bg="#101e30", fg="#dfebff", selectbackground="#20516a", selectforeground="#63e6df", font=("Segoe UI", 11), height=10, bd=1, relief="solid", highlightthickness=0, exportselection=False)
+        self.lb.pack(fill="x", pady=(0, 12))
+        self.lb.bind("<<ListboxSelect>>", self._on_cls_pick)
+        self.btns = []
+        for txt, cmd in [("+ New class", self._new_cls), ("Rename", self._ren_cls), ("Delete class", self._del_cls), ("Export this class", self._exp_cls)]:
+            b = tk.Button(side, text=txt, command=cmd, bg="#163449", fg="#dfebff", activebackground="#20516a", activeforeground="#63e6df", font=("Segoe UI", 11, "bold"), anchor="w", padx=12, pady=8, relief="flat", highlightthickness=1, highlightbackground="#247b91")
+            b.pack(fill="x", pady=(0, 8))
+            self.btns.append(b)
+        main = tk.Frame(root, bg="#0b1220")
+        main.pack(side="left", fill="both", expand=True)
+        self.hdr = tk.Label(main, text="Select or create a class", bg="#0b1220", fg="#dfebff", font=("Segoe UI", 17, "bold"), anchor="w")
+        self.hdr.pack(fill="x", pady=(0, 10))
+        self.svar = tk.StringVar(value="Search name or registration number...")
+        self.s_ph = True
+        self.sent = tk.Entry(main, textvariable=self.svar, bg="#101e30", fg="#6c8bb0", insertbackground="#63e6df", font=("Segoe UI", 11), relief="solid", bd=1)
+        self.sent.pack(fill="x", pady=(0, 12), ipady=6)
+        self.sent.bind("<FocusIn>", self._s_in)
+        self.sent.bind("<FocusOut>", self._s_out)
+        self.svar.trace_add("write", lambda *_: self._render() if not self.s_ph else None)
+        tf = tk.Frame(main, bg="#101e30", bd=1, relief="solid")
+        tf.pack(fill="both", expand=True, pady=(0, 12))
+        self.tree = ttk.Treeview(tf, columns=("n", "r"), show="headings", style="T.Treeview", selectmode="browse")
+        self.tree.heading("n", text="STUDENT NAME", anchor="w")
+        self.tree.heading("r", text="REGISTRATION NUMBER", anchor="w")
+        self.tree.column("n", width=360, anchor="w")
+        self.tree.column("r", width=220, anchor="w", stretch=False)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.tree.bind("<Button-1>", self._click)
+        self.tree.bind("<Return>", lambda _: self._edit(0, 0))
+        self.stat = tk.Label(main, text="Type a name, press Enter, type the registration number, then press Enter for the next student.", bg="#101e30", fg="#9ec0e6", font=("Segoe UI", 10), anchor="w", padx=12, pady=8, relief="solid", bd=1)
+        self.stat.pack(fill="x")
+    def _s_in(self, _):
+        if self.s_ph: self.s_ph = False; self.svar.set(""); self.sent.config(fg="#dfebff")
 
-    def _configure_ttk_styles(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
+    def _s_out(self, _):
+        if not self.svar.get().strip(): self.s_ph = True; self.sent.config(fg="#6c8bb0"); self.svar.set("Search name or registration number...")
 
-        style.configure(
-            "Register.Treeview",
-            background=self.BG_PANEL,
-            foreground=self.TEXT_MAIN,
-            fieldbackground=self.BG_PANEL,
-            bordercolor=self.BORDER,
-            lightcolor=self.BORDER,
-            darkcolor=self.BORDER,
-            rowheight=30,
-            font=("Segoe UI", 11),
-        )
-        style.map(
-            "Register.Treeview",
-            background=[("selected", self.BG_BTN_HOVER)],
-            foreground=[("selected", "#ffffff")],
-        )
-        style.configure(
-            "Register.Treeview.Heading",
-            background=self.BG_HEADER,
-            foreground=self.ACCENT,
-            bordercolor=self.BORDER,
-            relief="flat",
-            font=("Segoe UI", 11, "bold"),
-            padding=(8, 8),
-        )
-        style.map(
-            "Register.Treeview.Heading",
-            background=[("active", self.BG_BTN_HOVER)],
-        )
+    def _msg(self, txt, err=False):
+        self.stat.config(text=txt, bg="#3a1620" if err else "#101e30", fg="#ffd6d6" if err else "#9ec0e6")
 
-    def _make_sidebar_button(self, parent: tk.Widget, text: str, command) -> tk.Button:
-        btn = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=self.BG_BTN,
-            fg=self.TEXT_MAIN,
-            activebackground=self.BG_BTN_HOVER,
-            activeforeground=self.ACCENT,
-            disabledforeground="#5b7694",
-            font=("Segoe UI", 11, "bold"),
-            anchor="w",
-            padx=12,
-            pady=8,
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER_BTN,
-            highlightcolor=self.ACCENT,
-            cursor="hand2",
-        )
-        btn.bind("<Enter>", lambda _e: btn.config(bg=self.BG_BTN_HOVER) if btn["state"] == "normal" else None)
-        btn.bind("<Leave>", lambda _e: btn.config(bg=self.BG_BTN) if btn["state"] == "normal" else None)
-        return btn
+    def _load_classes(self, pick_id=None):
+        self._kill_ed()
+        self.lb.delete(0, tk.END)
+        self.cls_list = [(r["id"], r["name"]) for r in self.db.classes()]
+        for _, n in self.cls_list: self.lb.insert(tk.END, n)
+        if not self.cls_list:
+            self.cid, self.cname = None, ""
+            self.hdr.config(text="Create your first class.")
+            self.rows = [{"id": None, "n": "", "r": ""} for _ in range(20)]
+            self._render()
+            for b in self.btns[1:]: b.config(state="disabled")
+            return
+        for b in self.btns[1:]: b.config(state="normal")
+        idx = next((i for i, (c, _) in enumerate(self.cls_list) if c == pick_id), 0)
+        self.lb.selection_set(idx)
+        self._select_cls(idx)
 
-    def _build_ui(self) -> None:
-        root_frame = tk.Frame(self, bg=self.BG_MAIN)
-        root_frame.pack(fill="both", expand=True, padx=16, pady=16)
+    def _on_cls_pick(self, _):
+        sel = self.lb.curselection()
+        if sel: self._select_cls(sel)
 
-        sidebar = tk.Frame(root_frame, bg=self.BG_MAIN, width=230)
-        sidebar.pack(side="left", fill="y", padx=(0, 16))
-        sidebar.pack_propagate(False)
+    def _select_cls(self, idx):
+        self._kill_ed()
+        self.cid, self.cname = self.cls_list[idx]
+        self.hdr.config(text=self.cname)
+        sts = self.db.students(self.cid)
+        self.rows = [{"id": s["id"], "n": s["name"] or "", "r": s["reg"] or ""} for s in sts]
+        while len(self.rows) < 20: self.rows.append({"id": None, "n": "", "r": ""})
+        if self.rows[-1]["n"] or self.rows[-1]["r"]: self.rows.append({"id": None, "n": "", "r": ""})
+        self._render()
+        self._msg("Type a name, press Enter, type the registration number, then press Enter for the next student.")
 
-        brand_label = tk.Label(
-            sidebar,
-            text="BAF\nREGISTER",
-            bg=self.BG_MAIN,
-            fg=self.ACCENT,
-            font=("Segoe UI", 22, "bold"),
-            justify="left",
-            anchor="w",
-        )
-        brand_label.pack(fill="x", pady=(0, 12))
+    def _render(self):
+        self.tree.delete(*self.tree.get_children())
+        self.iid_map.clear()
+        q = "" if self.s_ph else self.svar.get().strip().lower()
+        blank_i = next((i for i in range(len(self.rows) - 1, -1, -1) if not self.rows[i]["n"] and not self.rows[i]["r"]), -1)
+        for i, r in enumerate(self.rows):
+            if q and i != blank_i and q not in r["n"].lower() and q not in r["r"].lower(): continue
+            iid = f"r{i}"
+            self.tree.insert("", "end", iid=iid, values=(r["n"], r["r"]))
+            self.iid_map[iid] = i
 
-        list_frame = tk.Frame(
-            sidebar,
-            bg=self.BG_PANEL,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-        )
-        list_frame.pack(fill="x", pady=(0, 12))
+    def _click(self, ev):
+        if not self.cid or self.tree.identify("region", ev.x, ev.y) != "cell": return
+        iid, col = self.tree.identify_row(ev.y), self.tree.identify_column(ev.x)
+        if iid in self.iid_map and col in ("#1", "#2"):
+            self._save_ed()
+            self.after(10, lambda r=self.iid_map[iid], c=(0 if col == "#1" else 1): self._edit(r, c))
 
-        self.class_listbox = tk.Listbox(
-            list_frame,
-            bg=self.BG_PANEL,
-            fg=self.TEXT_MAIN,
-            selectbackground=self.BG_BTN_HOVER,
-            selectforeground=self.ACCENT,
-            font=("Segoe UI", 11),
-            height=10,
-            bd=0,
-            highlightthickness=0,
-            activestyle="none",
-            exportselection=False,
-        )
-        self.class_listbox.pack(fill="both", expand=True, padx=6, pady=6)
-        self.class_listbox.bind("<<ListboxSelect>>", self._on_class_selected)
+    def _kill_ed(self):
+        if self.editor:
+            try: self.editor.destroy()
+            except tk.TclError: pass
+            self.editor, self.ed_rc = None, None
 
+    def _edit(self, r, c):
+        if not self.cid or r >= len(self.rows): return
+        self._kill_ed()
+        iid = f"r{r}"
+        if not self.tree.exists(iid): return
+        self.tree.selection_set(iid); self.tree.see(iid); self.update_idletasks()
+        box = self.tree.bbox(iid, "#1" if c == 0 else "#2")
+        if not box: return
+        e = tk.Entry(self.tree, bg="#193449", fg="#ffffff", insertbackground="#63e6df", font=("Segoe UI", 11), relief="flat", highlightthickness=2, highlightcolor="#63e6df")
+        e.place(x=box, y=box, width=box, height=box)
+        e.insert(0, self.rows[r]["n"] if c == 0 else self.rows[r]["r"])
+        e.select_range(0, tk.END); e.focus_set()
+        self.editor, self.ed_rc = e, (r, c)
+        e.bind("<Return>", self._enter)
+        e.bind("<KP_Enter>", self._enter)
+        e.bind("<Escape>", lambda _: self._kill_ed())
+        e.bind("<FocusOut>", lambda _: self._save_ed())
+
+    def _enter(self, _):
+        if not self.ed_rc: return "break"
+        r, c = self.ed_rc
+        if not self._save_ed(): return "break"
+        if c == 0:
+            self.after(10, lambda: self._edit(r, 1))
+        else:
+            if r + 1 >= len(self.rows):
+                self.rows.append({"id": None, "n": "", "r": ""})
+                self._render()
+            self.after(10, lambda: self._edit(r + 1, 0))
+        return "break"
+
+    def _save_ed(self):
+        if not self.editor or not self.ed_rc: return True
+        r, c = self.ed_rc
+        try: val = self.editor.get()
+        except tk.TclError: self._kill_ed(); return True
+        self._kill_ed()
+        row = self.rows[r]
+        nn = val.strip() if c == 0 else row["n"].strip()
+        nr = row["r"].strip().upper() if c == 0 else val.strip().upper()
+        if nn == row["n"] and nr == row["r"]: return True
+        if not nn and not nr:
+            if row["id"]:
+                self.db.del_student(row["id"])
+                row.update({"id": None, "n": "", "r": ""})
+                self._render(); self._msg("Saved automatically.")
+            return True
+        if reg_key(nr) and self.db.dup_reg(self.cid, reg_key(nr), row["id"]):
+            self._msg("REJECTED: This registration number is already used in this class. Enter a different number.", True)
+            row["n"], row["r"] = nn, ""
+            self._render()
+            self.after(10, lambda: self._edit(r, 1))
+            return False
+        try:
+            if not row["id"]:
+                row["id"] = self.db.add_student(self.cid, nn, nr)
+                row["n"], row["r"] = nn, nr
+                if self.rows[-1]["n"] or self.rows[-1]["r"]: self.rows.append({"id": None, "n": "", "r": ""})
+                self._render(); self._msg("Student registered.")
+            else:
+                self.db.upd_student(row["id"], nn, nr)
+                row["n"], row["r"] = nn, nr
+                self._render(); self._msg("Saved automatically.")
+            return True
+        except sqlite3.IntegrityError:
+            self._msg("REJECTED: This registration number is already used in this class. Your change was not saved.", True)
+            self._select_cls(self.lb.curselection())
+            return False
+
+    def _new_cls(self):
+        self._save_ed()
+        name = simpledialog.askstring("New Class", "Enter class name:", parent=self)
+        if not name or not name.strip(): return
+        try:
+            nid = self.db.add_class(name.strip())
+            self._load_classes(nid)
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Duplicate Class", "A class with this name already exists.", parent=self)
+
+    def _ren_cls(self):
+        if not self.cid: return
+        self._save_ed()
+        name = simpledialog.askstring("Rename Class", "Enter new class name:", initialvalue=self.cname, parent=self)
+        if not name or not name.strip(): return
+        try:
+            self.db.rename_class(self.cid, name.strip())
+            self._load_classes(self.cid)
+        except sqlite3.IntegrityError:
+            messagebox.showwarning("Duplicate Class", "A class with this name already exists.", parent=self)
+
+    def _del_cls(self):
+        if not self.cid: return
+        self._kill_ed()
+        if messagebox.askyesno("Delete Class", f"Delete '{self.cname}' and all its students?", parent=self):
+            self.db.del_class(self.cid)
+            self._load_classes()
+
+    def _exp_cls(self):
+        if not self.cid: return
+        self._save_ed()
+        exp = self.base_dir / "Exports"
+        exp.mkdir(parents=True, exist_ok=True)
+        path = filedialog.asksaveasfilename(parent=self, title="Export Class", initialdir=str(exp), initialfile=f"{safe_name(self.cname)}.xlsx", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
+        if not path: return
+        if not path.lower().endswith(".xlsx"): path += ".xlsx"
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = safe_name(self.cname)[:31]
+            ws.append(["STUDENT NAME", "REGISTRATION NUMBER"])
+            for col in (1, 2):
+                c = ws.cell(1, col)
+                c.font = Font(name="Segoe UI", bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="203957")
+            sts = self.db.students(self.cid)
+            for s in sts: ws.append([s["name"] or "", s["reg"] or ""])
+            ws.column_dimensions["A"].width = 45
+            ws.column_dimensions["B"].width = 30
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = f"A1:B{max(1, len(sts) + 1)}"
+            wb.save(path)
+            self._msg(f"Exported to: {path}")
+            messagebox.showinfo("Export Complete", f"Saved to:\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Could not export (close the file if it is open in Excel):\n{e}", parent=self)
+
+    def _close(self):
+        self._save_ed(); self.db.conn.close(); self.destroy()
+
+if __name__ == "__main__":
+    base = get_data_dir()
+    app = App(DB(base / "baf_student_register.db"), base)
+    app.mainloop()
