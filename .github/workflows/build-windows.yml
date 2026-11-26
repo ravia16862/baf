@@ -26,7 +26,7 @@ jobs:
 
       - name: Build native Windows .exe with Nuitka
         run: |
-          python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=tk-inter --output-dir=dist --output-filename=BAF_Simple_Student_Register.exe main.py
+          python -m nuitka --standalone --mingw64 --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --output-dir=dist --output-filename=BAF_Simple_Student_Register.exe main.py
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
