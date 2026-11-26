@@ -242,7 +242,8 @@ class App(tk.Tk):
             return True
         except sqlite3.IntegrityError:
             self._msg("REJECTED: This registration number is already used in this class. Your change was not saved.", True)
-            self._select_cls(self.lb.curselection())
+            sel = self.lb.curselection()
+            if sel: self._select_cls(sel)
             return False
 
     def _new_cls(self):
