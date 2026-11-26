@@ -35,12 +35,12 @@ jobs:
           icon.pixmap(256, 256).save('app_icon.ico', 'ICO')
           "
 
-      - name: Build standalone .exe with PyInstaller
+      - name: Build standalone Windows app folder with PyInstaller
         run: |
-          pyinstaller --noconfirm --onefile --windowed --icon=app_icon.ico --name "BAF_Simple_Student_Register" main.py
+          pyinstaller --noconfirm --onedir --windowed --noupx --icon=app_icon.ico --name "BAF_Simple_Student_Register" main.py
 
-      - name: Upload Windows .exe artifact
+      - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
         with:
           name: BAF_Simple_Student_Register_Windows
-          path: dist/BAF_Simple_Student_Register.exe
+          path: dist/BAF_Simple_Student_Register/
