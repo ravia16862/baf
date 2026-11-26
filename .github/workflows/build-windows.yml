@@ -18,29 +18,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies and PyInstaller
+      - name: Install dependencies and Nuitka
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install nuitka zstandard
 
-      - name: Generate application icon (.ico)
+      - name: Build native Windows .exe with Nuitka
         run: |
-          python -c "
-          import sys
-          from PySide6.QtWidgets import QApplication
-          from main import create_app_icon
-          app = QApplication(sys.argv)
-          icon = create_app_icon()
-          icon.pixmap(256, 256).save('app_icon.ico', 'ICO')
-          "
-
-      - name: Build standalone Windows app folder with PyInstaller
-        run: |
-          pyinstaller --noconfirm --onedir --windowed --noupx --icon=app_icon.ico --name "BAF_Simple_Student_Register" main.py
+          python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=tk-inter --output-dir=dist --output-filename=BAF_Simple_Student_Register.exe main.py
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
         with:
           name: BAF_Simple_Student_Register_Windows
-          path: dist/BAF_Simple_Student_Register/
+          path: dist/main.dist/
