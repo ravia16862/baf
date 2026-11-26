@@ -169,9 +169,7 @@ class StudentRegisterApp(tk.Tk):
         self.current_class_id: int | None = None
         self.current_class_name: str = ""
 
-        # Each entry: {"student_id": int | None, "name": str, "reg": str}
         self.rows_data: list[dict] = []
-        # Maps visible Treeview item iid -> index in self.rows_data
         self.iid_to_row_idx: dict[str, int] = {}
 
         self.active_editor: tk.Entry | None = None
@@ -259,7 +257,6 @@ class StudentRegisterApp(tk.Tk):
         root_frame = tk.Frame(self, bg=self.BG_MAIN)
         root_frame.pack(fill="both", expand=True, padx=16, pady=16)
 
-        # Left Sidebar
         sidebar = tk.Frame(root_frame, bg=self.BG_MAIN, width=230)
         sidebar.pack(side="left", fill="y", padx=(0, 16))
         sidebar.pack_propagate(False)
@@ -295,3 +292,7 @@ class StudentRegisterApp(tk.Tk):
             highlightthickness=0,
             activestyle="none",
             exportselection=False,
+        )
+        self.class_listbox.pack(fill="both", expand=True, padx=6, pady=6)
+        self.class_listbox.bind("<<ListboxSelect>>", self._on_class_selected)
+
