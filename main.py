@@ -111,7 +111,7 @@ class App(tk.Tk):
         self.tree.bind("<Return>", lambda _: self._edit(0, 0))
         self.stat = tk.Label(main, text="Type a name, press Enter, type the registration number, then press Enter for the next student.", bg="#101e30", fg="#9ec0e6", font=("Segoe UI", 10), anchor="w", padx=12, pady=8, relief="solid", bd=1)
         self.stat.pack(fill="x")
-    def _s_in(self, _):
+        def _s_in(self, _):
         if self.s_ph: self.s_ph = False; self.svar.set(""); self.sent.config(fg="#dfebff")
 
     def _s_out(self, _):
@@ -139,7 +139,9 @@ class App(tk.Tk):
 
     def _on_cls_pick(self, _):
         sel = self.lb.curselection()
-        if sel: self._select_cls(sel)
+        if sel:
+            idx, = sel
+            self._select_cls(idx)
 
     def _select_cls(self, idx):
         self._kill_ed()
@@ -184,8 +186,9 @@ class App(tk.Tk):
         self.tree.selection_set(iid); self.tree.see(iid); self.update_idletasks()
         box = self.tree.bbox(iid, "#1" if c == 0 else "#2")
         if not box: return
+        bx, by, bw, bh = box
         e = tk.Entry(self.tree, bg="#193449", fg="#ffffff", insertbackground="#63e6df", font=("Segoe UI", 11), relief="flat", highlightthickness=2, highlightcolor="#63e6df")
-        e.place(x=box, y=box, width=box, height=box)
+        e.place(x=bx, y=by, width=bw, height=bh)
         e.insert(0, self.rows[r]["n"] if c == 0 else self.rows[r]["r"])
         e.select_range(0, tk.END); e.focus_set()
         self.editor, self.ed_rc = e, (r, c)
@@ -243,7 +246,9 @@ class App(tk.Tk):
         except sqlite3.IntegrityError:
             self._msg("REJECTED: This registration number is already used in this class. Your change was not saved.", True)
             sel = self.lb.curselection()
-            if sel: self._select_cls(sel)
+            if sel:
+                idx, = sel
+                self._select_cls(idx)
             return False
 
     def _new_cls(self):
