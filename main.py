@@ -9,6 +9,15 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
+if os.name == "nt" and not getattr(sys, "frozen", False):
+    try:
+        import ctypes
+        _hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if _hwnd:
+            ctypes.windll.user32.ShowWindow(_hwnd, 0)
+    except Exception:
+        pass
+
 
 def get_data_dir():
     if getattr(sys, "frozen", False):
@@ -244,7 +253,7 @@ class App(tk.Tk):
 
         self.lb = tk.Listbox(
             side, bg="#101e30", fg="#dfebff", selectbackground="#20516a",
-            selectforeground="#63e6df", font=("Segoe UI", 11), height=10,
+            selectforeground="#63e6df", font=("Segoe UI", 11), height=9,
             bd=1, relief="solid", highlightthickness=0, exportselection=False,
         )
         self.lb.pack(fill="x", pady=(0, 12))
@@ -262,11 +271,20 @@ class App(tk.Tk):
             b = tk.Button(
                 side, text=txt, command=cmd, bg="#163449", fg="#dfebff",
                 activebackground="#20516a", activeforeground="#63e6df",
-                font=("Segoe UI", 11, "bold"), anchor="w", padx=12, pady=8,
+                font=("Segoe UI", 11, "bold"), anchor="w", padx=12, pady=7,
                 relief="flat", highlightthickness=1, highlightbackground="#247b91",
             )
             b.pack(fill="x", pady=(0, 8))
             self.btns.append(b)
+
+        if not getattr(sys, "frozen", False):
+            tk.Button(
+                side, text="Build EXE (--windowed)", command=self._build_exe,
+                bg="#1b4332", fg="#d8f3dc", activebackground="#2d6a4f",
+                activeforeground="#ffffff", font=("Segoe UI", 10, "bold"),
+                anchor="w", padx=12, pady=7, relief="flat",
+                highlightthickness=1, highlightbackground="#40916c",
+            ).pack(side="bottom", fill="x")
         main = tk.Frame(root, bg="#0b1220")
         main.pack(side="left", fill="both", expand=True)
 
@@ -577,7 +595,7 @@ class App(tk.Tk):
         exp = self.base_dir / "Exports"
         exp.mkdir(parents=True, exist_ok=True)
         default_name = (
-            f"{safe_name(dlg.selected[0][1])}.xlsx"
+            f"{safe_name(dlg.selected)}.xlsx"
             if len(dlg.selected) == 1
             else "BAF_Classes_Export.xlsx"
         )
@@ -604,24 +622,48 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not export:\n{e}", parent=self)
 
+    def _build_exe(self):
+        self._save_ed()
+        self._msg("Building --windowed EXE... please wait.")
+        self.update_idletasks()
+        ok, info = build_windowed_exe()
+        if ok:
+            self._msg(f"EXE built: {info}")
+            messagebox.showinfo("Build Complete", f"Windowed EXE created at:\n{info}", parent=self)
+        else:
+            self._msg("EXE build failed.", True)
+            messagebox.showerror("Build Failed", info, parent=self)
+
     def _close(self):
         self._save_ed()
         self.db.conn.close()
         self.destroy()
 
 
-def _relaunch_windowed_if_needed():
-    if os.name == "nt" and not getattr(sys, "frozen", False):
-        exe = Path(sys.executable)
-        if exe.name.lower() == "python.exe":
-            pythonw = exe.with_name("pythonw.exe")
-            if pythonw.exists():
-                subprocess.Popen([str(pythonw), *sys.argv], creationflags=subprocess.DETACHED_PROCESS)
-                sys.exit(0)
+def build_windowed_exe():
+    script = Path(__file__).resolve()
+    py_exe = Path(sys.executable)
+    if py_exe.name.lower() == "pythonw.exe":
+        py_exe = py_exe.with_name("python.exe")
+    cmd = [
+        str(py_exe), "-m", "PyInstaller",
+        "--noconfirm", "--onefile", "--windowed",
+        "--name", "BAF_Register",
+        "--distpath", str(script.parent),
+        str(script),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode == 0:
+        return True, str(script.parent / "BAF_Register.exe")
+    return False, (res.stderr or res.stdout or "Make sure pyinstaller is installed (pip install pyinstaller).")
 
 
 if __name__ == "__main__":
-    _relaunch_windowed_if_needed()
+    if "--windowed" in sys.argv and not getattr(sys, "frozen", False):
+        ok, msg = build_windowed_exe()
+        print("SUCCESS:" if ok else "ERROR:", msg)
+        sys.exit(0 if ok else 1)
+
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
